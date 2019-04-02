@@ -5,6 +5,7 @@
 #import <React/UIView+React.h>
 #include <MediaAccessibility/MediaAccessibility.h>
 #include <AVFoundation/AVFoundation.h>
+#import "CachingPlayerItem.h"
 
 static NSString *const statusKeyPath = @"status";
 static NSString *const playbackLikelyToKeepUpKeyPath = @"playbackLikelyToKeepUp";
@@ -74,6 +75,9 @@ static int const RCTVideoUnset = -1;
   NSString *_filterName;
   BOOL _filterEnabled;
   UIViewController * _presentingViewController;
+
+  NSMutableDictionary<NSString *, AVPlayerItem *> *_bufferQueue;
+
 #if __has_include(<react-native-video/RCTVideoCache.h>)
   RCTVideoCache * _videoCache;
 #endif
@@ -110,6 +114,9 @@ static int const RCTVideoUnset = -1;
 #if TARGET_OS_IOS
     _restoreUserInterfaceForPIPStopCompletionHandler = NULL;
 #endif
+
+    _bufferQueue = [[NSMutableDictionary alloc] init];
+
 #if __has_include(<react-native-video/RCTVideoCache.h>)
     _videoCache = [RCTVideoCache sharedInstance];
 #endif
@@ -337,6 +344,22 @@ static int const RCTVideoUnset = -1;
 
 #pragma mark - Player and source
 
+- (void)setQueue:(NSString *)source {
+    if ([_bufferQueue objectForKey:source]) {
+        // item already in cache
+        return;
+    }
+
+    NSURL *url = [NSURL URLWithString:source];
+
+//    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
+//    CachingPlayerItem *item = [[CachingPlayerItem alloc] init]
+    CachingPlayerItem *item = [[CachingPlayerItem alloc] initWithURL:url customFileExtension:@"mp4"];
+
+    [_bufferQueue setObject:item forKey:source];
+    [item buffer];
+}
+
 - (void)setSrc:(NSDictionary *)source
 {
   _source = source;
@@ -344,10 +367,12 @@ static int const RCTVideoUnset = -1;
   [self removePlayerTimeObserver];
   [self removePlayerItemObservers];
 
+
+    // why wait for the next iteration???
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t) 0), dispatch_get_main_queue(), ^{
 
     // perform on next run loop, otherwise other passed react-props may not be set
-    [self playerItemForSource:source withCallback:^(AVPlayerItem * playerItem) {
+    [self cachedPlayerItemForSource:source withCallback:^(AVPlayerItem * playerItem) {
       _playerItem = playerItem;
       [self addPlayerItemObservers];
       [self setFilter:_filterName];
@@ -367,6 +392,7 @@ static int const RCTVideoUnset = -1;
       }
         
       _player = [AVPlayer playerWithPlayerItem:_playerItem];
+      _player.automaticallyWaitsToMinimizeStalling = true;
       _player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
         
       [_player addObserver:self forKeyPath:playbackRate options:0 context:nil];
@@ -466,6 +492,16 @@ static int const RCTVideoUnset = -1;
   }
 
   handler([AVPlayerItem playerItemWithAsset:mixComposition]);
+}
+
+- (void)cachedPlayerItemForSource:(NSDictionary *)source withCallback:(void(^)(AVPlayerItem *))handler {
+    if ([[_bufferQueue allKeys] containsObject:source[@"uri"]]) {
+        handler(_bufferQueue[source[@"uri"]]);
+//        _bufferQueue[source[@"uri"]] = nil;
+        return;
+    }
+
+    [self playerItemForSource:source withCallback:handler];
 }
 
 - (void)playerItemForSource:(NSDictionary *)source withCallback:(void(^)(AVPlayerItem *))handler
@@ -751,9 +787,9 @@ static int const RCTVideoUnset = -1;
 }
 
 - (void)handleAVPlayerAccess:(NSNotification *)notification {
-    AVPlayerItemAccessLog *accessLog = [((AVPlayerItem *)notification.object) accessLog];
-    AVPlayerItemAccessLogEvent *lastEvent = accessLog.events.lastObject;
-    
+//    AVPlayerItemAccessLog *accessLog = [((AVPlayerItem *)notification.object) accessLog];
+//    AVPlayerItemAccessLogEvent *lastEvent = accessLog.events.lastObject;
+//
     /* TODO: get this working
     if (self.onBandwidthUpdate) {
         self.onBandwidthUpdate(@{@"bitrate": [NSNumber numberWithFloat:lastEvent.observedBitrate]});
